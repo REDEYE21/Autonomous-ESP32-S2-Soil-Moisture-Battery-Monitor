@@ -1,0 +1,158 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <esp_task_wdt.h> // Include the native ESP32 Watchdog library
+
+// ==========================================
+// 1. CONFIGURATION
+// ==========================================
+const char* ssid = "Wifi_name";
+const char* password = "Wifi_Password";
+const char* server = "http://api.thingspeak.com/update";
+String apiKey = "Thingstospeak_api";
+
+#define POWER_PIN 11  
+#define I2C_SDA 7     
+#define I2C_SCL 9     
+
+// Deep Sleep Time Configuration (5 minutes)
+#define TIME_TO_SLEEP  300        
+#define uS_TO_S_FACTOR 1000000ULL 
+
+// Watchdog Timeout (15 seconds is plenty of time for a quick Wi-Fi upload)
+#define WDT_TIMEOUT_SECONDS 15
+
+// Soil Moisture Calibration values
+const int dryValue = 155; 
+const int wetValue = 108; 
+
+// Battery Calibration values
+const float vRef = 3.3; 
+const float dividerRatio = 2.0; 
+const float batteryMax = 4.2; 
+const float batteryMin = 3.2; 
+
+void setup() {
+  Serial.begin(115200);
+  
+  // ------------------------------------------
+  // WATCHDOG INITIALIZATION
+  // ------------------------------------------
+  Serial.println("Initializing Watchdog...");
+  // Configure the Watchdog timer configuration structure
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT_SECONDS * 1000,
+    .idle_core_mask = (1 << 0), // ESP32-S2 is single-core (Core 0)
+    .trigger_panic = true       // True means hardware reset when timer expires
+  };
+  
+  // Initialize the timer with our custom config
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL); // Add the current execution thread (setup) to the watchdog
+  
+  // Power the PCF8591 chip and connected sensors
+  pinMode(POWER_PIN, OUTPUT);
+  digitalWrite(POWER_PIN, HIGH); 
+  delay(100); 
+  
+  Wire.begin(I2C_SDA, I2C_SCL); 
+  
+  Serial.println("\n--- Station Awake ---");
+  esp_task_wdt_reset(); // Feed the dog before starting network tasks
+
+  // CONNECT TO WIFI
+  WiFi.persistent(false); 
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  // Loop caps at 16 attempts (~8 seconds max) to stay well under the 15s WDT limit
+  while (WiFi.status() != WL_CONNECTED && attempts < 16) {
+    delay(500);
+    esp_task_wdt_reset(); // Feed the dog during the connection loop so it doesn't timeout early
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi Connected.");
+    
+    // 1. Read Soil Moisture from AIN1 (Control Byte 0x41)
+    int moistureRaw = readPCF8591Channel(0x41); 
+    int moisturePercent = 0;
+    
+    if (moistureRaw != -1) {
+      moisturePercent = constrain(map(moistureRaw, dryValue, wetValue, 0, 100), 0, 100);
+      Serial.print("Soil Raw: "); Serial.print(moistureRaw);
+      Serial.print(" | Moisture: "); Serial.print(moisturePercent); Serial.println("%");
+    }
+
+    // 2. Read Battery Voltage from AIN0 (Control Byte 0x40)
+    int voltageRaw = readPCF8591Channel(0x40);
+    int batteryPercent = 0;
+    
+    if (voltageRaw != -1) {
+      float actualVoltage = ((voltageRaw / 255.0) * vRef) * dividerRatio;
+      batteryPercent = constrain(((actualVoltage - batteryMin) / (batteryMax - batteryMin)) * 100, 0, 100);
+      Serial.print("Battery Raw: "); Serial.print(voltageRaw);
+      Serial.print(" | Voltage: "); Serial.print(actualVoltage); Serial.print("V");
+      Serial.print(" | Charge: "); Serial.print(batteryPercent); Serial.println("%");
+    }
+
+    // 3. Send Data to ThingsPeak if readings succeeded
+    if (moistureRaw != -1 && voltageRaw != -1) {
+      HTTPClient http;
+      String url = String(server) + "?api_key=" + apiKey + 
+                   "&field1=" + String(moisturePercent) + 
+                   "&field2=" + String(batteryPercent);
+      
+      http.begin(url);
+      
+      esp_task_wdt_reset(); // Feed the dog right before the network request
+      int httpCode = http.GET(); 
+      esp_task_wdt_reset(); // Feed the dog right after the network request returns
+      
+      if (httpCode > 0) {
+        Serial.print("Data Sent successfully. Code: "); Serial.println(httpCode);
+      } else {
+        Serial.print("HTTP Error: "); Serial.println(http.errorToString(httpCode).c_str());
+      }
+      http.end();
+    }
+  } else {
+    Serial.println("WiFi connection failed.");
+  }
+
+  // ==========================================
+  // PREPARE FOR DEEP SLEEP
+  // ==========================================
+  Serial.println("Cutting sensor power...");
+  digitalWrite(POWER_PIN, LOW); 
+  
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  
+  Serial.println("Entering Deep Sleep. Watchdog paused.");
+  Serial.flush(); 
+  
+  // Note: Deep sleep naturally deactivates/pauses the Watchdog Timer,
+  // so the chip will safely sleep for 5 minutes without resetting.
+  esp_deep_sleep_start();
+}
+
+void loop() {
+  // Empty block due to Deep Sleep reset cycle
+}
+
+int readPCF8591Channel(byte controlByte) {
+  Wire.beginTransmission(0x48); 
+  Wire.write(controlByte); 
+  Wire.endTransmission();
+  Wire.requestFrom(0x48, 2);
+  if (Wire.available() == 2) {
+    Wire.read(); 
+    return Wire.read(); 
+  }
+  return -1; 
+}
