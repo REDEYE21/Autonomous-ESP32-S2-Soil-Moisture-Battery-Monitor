@@ -1,0 +1,28 @@
+# --- Core Microcontroller Build Outputs ---
+*.elf
+*.bin
+*.hex
+*.d
+*.o
+
+# --- Arduino IDE Temporary Folders ---
+.dns/
+Build/
+build/
+Output/
+output/
+stino/
+Applet/
+
+# --- Operating System Files ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+*.lnk
+
+# --- Security & Workspace Settings ---
+.vscode/
+.arduinoIDE/
+
+# Blocks your Wi-Fi password file if you separate it later
+secrets.h
