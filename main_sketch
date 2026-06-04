@@ -22,9 +22,13 @@ String apiKey = "Thingstospeak_api";
 // Watchdog Timeout (15 seconds is plenty of time for a quick Wi-Fi upload)
 #define WDT_TIMEOUT_SECONDS 15
 
-// Soil Moisture Calibration values
-const int dryValue = 155; 
-const int wetValue = 108; 
+// --- SOIL MOISTURE CALIBRATION THRESHOLDS ---
+// These limits represent the raw ADC values for this specific soil composition.
+// Values were determined empirically via physical testing.
+
+const int dryValue = 133; // Raw ADC reading at the physical wilting point (0% baseline)
+const int wetValue = 115; // Raw ADC reading at maximum soil saturation (100% baseline)
+
 
 // Battery Calibration values
 const float vRef = 3.3; 
